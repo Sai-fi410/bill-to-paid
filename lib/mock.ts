@@ -37,18 +37,58 @@ const extractedItems: LineItem[] = [
 ]
 const delay = (ms = 250) => new Promise(resolve => setTimeout(resolve, ms))
 export const money = (value: number, decimals = 0) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: decimals, minimumFractionDigits: decimals }).format(value)
-export async function getInvoices(): Promise<Invoice[]> { return invoices.map(invoice => ({ ...invoice })) }
+const palette = ['violet', 'blue', 'green', 'rose', 'amber']
+function fromPayPal(p: any, i: number): Invoice {
+  const bi = p.primary_recipients?.[0]?.billing_info
+  const email = bi?.email_address || ''
+  const name = [bi?.name?.given_name, bi?.name?.surname].filter(Boolean).join(' ') || email.split('@')[0] || 'Customer'
+  const raw = String(p.status || 'DRAFT')
+  const due = p.detail?.payment_term?.due_date || p.detail?.invoice_date || ''
+  let status: InvoiceStatus = raw === 'PAID' || raw === 'MARKED_AS_PAID' ? 'PAID' : raw === 'DRAFT' ? 'DRAFT' : 'SENT'
+  if (status === 'SENT' && due && due < new Date().toISOString().slice(0, 10)) status = 'OVERDUE'
+  const action = status === 'PAID' ? 'Payment confirmed' : status === 'DRAFT' ? 'Ready for your review' : status === 'OVERDUE' ? 'Reminder due' : 'Invoice delivered'
+  return { id: p.detail?.invoice_number || p.id, customer: name, email, initials: name.split(/\s+/).map((n: string) => n[0]).slice(0, 2).join('').toUpperCase(), amount: Number(p.amount?.value ?? 0), status, due, action, color: palette[i % palette.length], created: p.detail?.invoice_date || '' }
+}
+export async function getInvoices(): Promise<Invoice[]> {
+  try {
+    const r = await fetch('/api/invoices', { cache: 'no-store' })
+    const j = await r.json()
+    const real = Array.isArray(j.items) ? j.items.map(fromPayPal) : []
+    if (real.length) return real
+  } catch {}
+  return invoices.map(invoice => ({ ...invoice }))
+}
 export async function getActivity(): Promise<AgentActivity[]> { return activities.map(activity => ({ ...activity })) }
 export function getMetricTrends() { return trends.map(points => points.map(value => ({ value }))) }
-export async function scanBill(_file?: File): Promise<LineItem[]> { await delay(2300); return extractedItems.map(item => ({ ...item })) }
+async function shrink(file: File): Promise<string> {
+  const url = URL.createObjectURL(file)
+  const img = await new Promise<HTMLImageElement>((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('Could not read the image.')); i.src = url })
+  const scale = Math.min(1, 1280 / Math.max(img.width, img.height))
+  const c = document.createElement('canvas')
+  c.width = Math.round(img.width * scale)
+  c.height = Math.round(img.height * scale)
+  c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height)
+  URL.revokeObjectURL(url)
+  return c.toDataURL('image/jpeg', 0.8).split(',')[1]
+}
+export async function scanBill(file?: File): Promise<LineItem[]> {
+  if (!file) return extractedItems.map(item => ({ ...item }))
+  const data = await shrink(file)
+  const r = await fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: data, mime: 'image/jpeg' }) })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok || !Array.isArray(j.items)) throw new Error(j.error || 'Could not read the bill.')
+  return j.items.map((it: any, i: number) => ({ id: `item-${i + 1}`, name: String(it.name), quantity: Number(it.quantity) || 1, price: Number(it.price) || 0 }))
+}
 export async function sendInvoice(input: { email: string; customer: string; items: LineItem[]; due: string }): Promise<Invoice> {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email) || !input.customer.trim()) throw new Error('Enter a customer name and a valid email address.')
   if (!input.due || !Number.isFinite(Date.parse(input.due))) throw new Error('Choose a valid due date.')
   if (!input.items.length || input.items.some(item => !item.name.trim() || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 999 || !Number.isFinite(item.price) || item.price <= 0 || item.price > 100000)) throw new Error('Each item needs a name, a quantity from 1–999, and a valid positive price.')
-  await delay(1000)
-  const invoice: Invoice = { id: `INV-${1043 + invoices.length - seedInvoices.length}`, customer: input.customer.trim(), email: input.email.trim(), initials: input.customer.trim().split(/\s+/).map(name => name[0]).slice(0, 2).join('').toUpperCase(), amount: Math.round(input.items.reduce((sum, item) => sum + item.quantity * item.price, 0) * 100) / 100, status: 'SENT', due: input.due, action: 'Invoice delivered (demo)', color: 'violet', created: new Date().toISOString().slice(0, 10) }
+  const res = await fetch('/api/invoice', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customerEmail: input.email.trim(), customerName: input.customer.trim(), dueDate: input.due, items: input.items.map(i => ({ name: i.name, qty: i.quantity, price: i.price })) }) })
+  const out = await res.json().catch(() => ({}))
+  if (!res.ok || !out.id) throw new Error(out?.error || 'PayPal could not create the invoice.')
+  const invoice: Invoice = { id: out.id, customer: input.customer.trim(), email: input.email.trim(), initials: input.customer.trim().split(/\s+/).map(name => name[0]).slice(0, 2).join('').toUpperCase(), amount: Math.round(input.items.reduce((sum, item) => sum + item.quantity * item.price, 0) * 100) / 100, status: 'SENT', due: input.due, action: 'Invoice sent via PayPal', color: 'violet', created: new Date().toISOString().slice(0, 10) }
   invoices = [invoice, ...invoices]
-  activities.unshift({ id: `a-${invoice.id}`, type: 'sent', title: 'Your next payment starts here', description: `Demo invoice sent to ${invoice.customer} for ${money(invoice.amount)}.`, time: 'Just now', reasoning: 'The line items and customer details were validated. This is a simulated send; no email or real PayPal invoice was created.' })
+  activities.unshift({ id: `a-${invoice.id}`, type: 'sent', title: 'Your next payment starts here', description: `Invoice sent to ${invoice.customer} for ${money(invoice.amount)}.`, time: 'Just now', reasoning: 'The line items and customer details were validated. The invoice was created and sent through the PayPal Invoicing API.' })
   return { ...invoice }
 }
 export async function getFlowInvoices(): Promise<Invoice[]> { return getInvoices() }
