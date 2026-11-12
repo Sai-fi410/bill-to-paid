@@ -34,18 +34,11 @@ npm run dev
 ```
 Open http://localhost:3000
 
-### Environment variables (`.env.local`)
-```
-PAYPAL_CLIENT_ID=        # PayPal Developer > Apps & Credentials > Sandbox app
-PAYPAL_CLIENT_SECRET=
-PAYPAL_BASE=https://api-m.sandbox.paypal.com
-GEMINI_API_KEY=          # Google AI Studio
-GEMINI_MODEL=            # optional, defaults to a current Gemini Flash model
-```
+
 The PayPal app must have the **Invoicing** feature enabled. Never commit `.env.local`.
 
 ## Testing as a judge
-- Live demo: <YOUR VERCEL URL>
+- Live demo: bill-to-paid.vercel.app
 - Open **New invoice**, upload a bill photo (or use the sample bill), review the items, enter a customer email and due date, and click Send.
 - Open **Overview** to see the invoice listed from PayPal.
 - Verify it in the PayPal Sandbox: log in at https://sandbox.paypal.com with the Business test account given in the Devpost testing instructions, then open Invoicing.
