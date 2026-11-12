@@ -58,4 +58,4 @@ The PayPal app must have the **Invoicing** feature enabled. Never commit `.env.l
 ## License
 MIT
 
-Copyright (c) 2026 Sai Dhapte
+Copyright © 2026 Sai Dhapte
